@@ -22,7 +22,6 @@ import Data.Monoid
 import Data.Set (Set)
 import Data.String (IsString(..))
 import Data.Time (DiffTime)
-import Data.Traversable (traverse)
 import Data.Typeable (Typeable)
 import Lib.AnnotatedException (annotateException)
 import Lib.BuildId (BuildId)
@@ -35,7 +34,7 @@ import Lib.FileDesc (fileModeDescOfStat, fileStatDescOfStat)
 import Lib.FilePath (FilePath, (</>), (<.>))
 import Lib.Fresh (Fresh)
 import Lib.IORef (atomicModifyIORef'_, atomicModifyIORef_)
-import Lib.Makefile (Makefile(..), TargetType(..), Target, targetAllInputs, filePatternFile)
+import Lib.Makefile (Makefile(..), TargetType(..), InputPat(..), FilePattern(..), Target, Pattern, targetAllInputs)
 import Lib.Parallelism (Parallelism)
 import Lib.Parsec (showPos)
 import Lib.Printer (Printer, printStrLn)
@@ -246,22 +245,36 @@ mkSlavesDirectAccess bte@BuildTargetEnv{..} explicitness path
     missingInputHintsBehavior _                       _        = MissingInputHintsDisallowed
 
 makeChildSlaves :: BuildTargetEnv -> FilePath -> IO [Slave]
-makeChildSlaves bte@BuildTargetEnv{..} path
-  | not (null childPatterns) =
-    fail $ BS8.unpack $ bsRender bteBuildsome $ mconcat
-    [ "UNSUPPORTED: Read directory (", bteReason, ") on directory ", show path
-    , " with patterns: "
-    , cTarget $ show $ map (map showTargetOutputPattern . targetOutputs) childPatterns
-    ]
-  | otherwise =
-    traverse (getSlaveForTarget bte MissingInputHintsDisallowed) $
+makeChildSlaves bte@BuildTargetEnv{..} path =
+  fmap concat $
+  sequence
+  [ mapM (getSlaveForTarget bte MissingInputHintsDisallowed) $
     filter (not . isPhony . snd) childTargets
+  , fmap concat $ mapM (getSlavesForPattern bte) childPatterns
+  ]
   where
     Color.Scheme{..} = Color.scheme
-    showTargetOutputPattern = StringPattern.toString . filePatternFile
     isPhony = all (`S.member` phoniesSet bteBuildsome) . targetOutputs
     DirectoryBuildMap childTargets childPatterns =
       BuildMaps.findDirectory (bsBuildMaps bteBuildsome) path
+
+getSlavesForPattern :: BuildTargetEnv -> Pattern -> IO [Slave]
+getSlavesForPattern bte pattern =
+  mapM (getSlaveForTarget bte MissingInputHintsDisallowed) =<<
+  enumeratePatternInstantiations bte pattern
+
+enumeratePatternInstantiations :: BuildTargetEnv -> Pattern -> IO [(TargetRep, Target)]
+enumeratePatternInstantiations bte pattern =
+  fmap concat $ mapM (enumerateFilePattern bte) inputPatterns
+  where
+    filePatternOutputs = targetOutputs pattern
+    inputPatterns = [pat | InputPattern pat <- targetAllInputs pattern]
+
+enumerateFilePattern :: BuildTargetEnv -> FilePattern -> IO [StringPattern.Match]
+enumerateFilePattern =
+  error $
+  "TODO: Globbing + " ++
+  "BuildMaps.findFilePattern (purely find the relevant targets/patterns) and then enumerate the patterns similarly to makeChildSlaves"
 
 mkSlavesForAccessType ::
   FSHook.AccessType -> BuildTargetEnv -> Explicitness -> FilePath -> IO [Slave]
